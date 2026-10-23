@@ -114,3 +114,13 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 1. Build 成功。
 2. 第一次開啟會跳出麥克風權限。
 3. Record → 結果持續更新、不閃退；stop 正常停止。
+
+## 追加（2026-10-23）：commit 與 PR 格式
+
+新增 `CONTRIBUTING.md` 和 `.github/pull_request_template.md`，三個 repo 內容相同：
+- commit 採用 [Conventional Commits](https://www.conventionalcommits.org/)（`type(scope): subject`，英文、祈使句、72 字元以內，body 說明原因）。
+- PR 標題用同樣的格式，但最多 65 字元（squash 時 GitHub 會加上 ` (#N)`），內容分成 Summary / Changes / Verification / Test plan。repo 設定裡的 squash 預設訊息要選「Pull request title and description」。
+- 這次三個分支上的 commit 訊息也照這個規則整理過（只改訊息、不改內容），因為分支是新建、尚未合併的。
+- 工作流程：分支（worktree）→ `docs/plan` → review 與對抗性驗證 → PR → **squash merge**。
+
+**不重寫 main 的舊歷史。** main 上的 commit 都已公開，改寫要 force-push，會讓所有 clone 對不上；而且舊訊息多半是「Update README.md」，重寫也補不回當時的原因。改用 squash merge，讓之後 main 上每個 PR 都是一個格式正確的 commit，分支上的中間 commit 不會留在 main。
