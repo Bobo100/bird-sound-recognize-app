@@ -1,0 +1,17 @@
+# Gradle / build
+.gradle/
+build/
+/captures
+.externalNativeBuild/
+.cxx/
+
+# Local SDK path, never commit
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

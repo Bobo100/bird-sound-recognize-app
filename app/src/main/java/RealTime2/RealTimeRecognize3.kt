@@ -16,10 +16,15 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.example.mysoundtest.R
+import kotlin.math.roundToInt
 
 
 @Suppress("DEPRECATION")
 class RealTimeRecognize3 : AppCompatActivity() {
+    companion object {
+        private const val REQUEST_RECORD_AUDIO = 1
+    }
+
     private var mAudioRecord: AudioRecord? = null
     private var isRecording = false
 
@@ -55,6 +60,13 @@ class RealTimeRecognize3 : AppCompatActivity() {
             }
         }
 
+        // Ask for the microphone up front; startRecord() does nothing without it
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
+        }
+
         // TensorFlow Lite
         mAcousticEventDetector = AcousticEventDetector(
             this,
@@ -79,13 +91,7 @@ class RealTimeRecognize3 : AppCompatActivity() {
                 Manifest.permission.RECORD_AUDIO
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
             return
         }
         mAudioRecord = AudioRecord(
@@ -153,8 +159,10 @@ class RealTimeRecognize3 : AppCompatActivity() {
 
                         /////////////////////////////////////////////////////////////////////////////////////////// predict
                         val results = mAcousticEventDetector.recognize(oneDArray)
-                        val recognize_result = findViewById<TextView>(R.id.recognize_result)
-                        recognize_result.text = "$results"
+                        // Views may only be touched on the UI thread
+                        runOnUiThread {
+                            findViewById<TextView>(R.id.recognize_result).text = "$results"
+                        }
                         Log.v("results", results.toString())
                         ///////////////////////////////////////////////////////////////////////////////////////////
 
@@ -167,8 +175,9 @@ class RealTimeRecognize3 : AppCompatActivity() {
     }
 
     private fun normalize(mfccValues: Array<FloatArray>): Array<IntArray> {
-        var max_float = 0F
-        var min_float = 255F
+        // Start from a real value: dB values are <= 0, so 0F / 255F never get replaced
+        var max_float = mfccValues[0][0]
+        var min_float = mfccValues[0][0]
         for (i in mfccValues.indices) {
             for (j in 0 until mfccValues[0].size) {
                 if (mfccValues[i][j] > max_float) max_float = mfccValues[i][j]
@@ -183,7 +192,7 @@ class RealTimeRecognize3 : AppCompatActivity() {
 
         for (i in mfccValues.indices) {
             for (j in 0 until mfccValues[0].size) {
-                intArray[i][j] = ((mfccValues[i][j] - min_float) * 255F / maxMin).toInt()
+                intArray[i][j] = if (maxMin > 0F) ((mfccValues[i][j] - min_float) * 255F / maxMin).roundToInt() else 0
             }
         }
         return intArray

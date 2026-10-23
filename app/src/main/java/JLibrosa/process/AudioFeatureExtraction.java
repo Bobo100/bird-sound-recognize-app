@@ -606,23 +606,24 @@ public class AudioFeatureExtraction {
 ////            }
 ////        }
 
-        //自己寫寫看
+        // Same as librosa.amplitude_to_db(S, ref=np.max, amin=1e-5, top_db=80) used in training.
+        // Training audio is float in [-1, 1]; callers pass 16-bit PCM values, so amin is scaled by 32768.
+        final double amin = 1e-5 * 32768;
         for (int i = 0; i < melS.length; i++) {
             for (int j = 0; j < melS[0].length; j++) {
                 double magnitude = Math.abs(melS[i][j]);
-                if (magnitude > 1e-10) {
-                    log_spec[i][j] = 20.0 * log10(magnitude);
-                } else {
-                    log_spec[i][j] = 20.0 * log10(1e-10);
-                }
-                if (max > 1e-10) {
-                    log_spec[i][j] -= 20.0 * log10(max);
-                }else {
-                    log_spec[i][j] -= 20.0 * log10(1e-10);
-                }
+                log_spec[i][j] = 20.0 * log10(Math.max(amin, magnitude));
+                log_spec[i][j] -= 20.0 * log10(Math.max(amin, max));
             }
         }
+        // top_db = 80, relative to the peak of the whole spectrogram (librosa: log_spec.max() - top_db)
         max = log_spec[0][0];
+        for (int i = 0; i < melS.length; i++) {
+            for (int j = 0; j < melS[0].length; j++) {
+                if (log_spec[i][j] > max)
+                    max = log_spec[i][j];
+            }
+        }
         for (int i = 0; i < melS.length; i++) {
             for (int j = 0; j < melS[0].length; j++) {
                 if (log_spec[i][j] < max - 80) {
