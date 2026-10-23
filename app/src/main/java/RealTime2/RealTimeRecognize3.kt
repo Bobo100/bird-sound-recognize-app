@@ -91,7 +91,8 @@ class RealTimeRecognize3 : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_RECORD_AUDIO && grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
+        // An empty result means the request was cancelled, not denied
+        if (requestCode == REQUEST_RECORD_AUDIO && grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "未取得麥克風權限，請到系統設定開啟", Toast.LENGTH_LONG).show()
         }
     }
@@ -105,10 +106,20 @@ class RealTimeRecognize3 : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
             return
         }
+        if (bufferSize <= 0) {
+            Toast.makeText(this, "這台裝置不支援 44.1 kHz 錄音", Toast.LENGTH_LONG).show()
+            return
+        }
         val recorder = AudioRecord(
             laiyuan, SAMPLE_RATE,
             CHANNEL, audioFormat, bufferSize
         )
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            // e.g. the microphone is still held by the previous recording or another app
+            recorder.release()
+            Toast.makeText(this, "麥克風無法使用，請稍後再試", Toast.LENGTH_SHORT).show()
+            return
+        }
         recorder.startRecording()
         mAudioRecord = recorder
 
