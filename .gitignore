@@ -8,8 +8,10 @@ build/
 # Local SDK path, never commit
 local.properties
 
-# IDE
-.idea/
+# IDE (keep the shared code style and dictionary)
+.idea/*
+!.idea/codeStyles/
+!.idea/dictionaries/
 *.iml
 
 # OS

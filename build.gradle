@@ -3,15 +3,12 @@ buildscript {
     ext.kotlin_version = '1.5.0'
     repositories {
         google()
-        jcenter()
-        //Jcenter 要關閉了 改用下面的mavenCentral
         mavenCentral()
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:7.2.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
 
-//        compile fileTree(dir: 'libs', include: ['*.jar'])
         // NOTE: Do not place your application dependencies here; they belong
         // in the individual module build.gradle files
     }
@@ -20,7 +17,6 @@ buildscript {
 allprojects {
     repositories {
         google()
-        jcenter()
         mavenCentral()
     }
 }

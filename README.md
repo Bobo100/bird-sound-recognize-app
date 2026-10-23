@@ -10,17 +10,19 @@ There is little material on how to turn live microphone audio into exactly the s
 
 ## How it works
 
-Every second of 44.1 kHz mono audio goes through the same steps as `utils/audio.melspec` in the training repo:
+The app records 44.1 kHz mono audio and cuts it into 1-second windows. Each window goes through the same steps as `utils/audio.melspec` in the training repo:
 
 | Step | Training (Python, `librosa`) | App (`RealTimeRecognize3.kt`, JLibrosa) |
 |---|---|---|
-| Pre-emphasis | `y[n] = x[n] − 0.95·x[n−1]` | `FIR` with `[-0.95, 1.0]` |
+| Pre-emphasis | `y[n] = x[n] − 0.95·x[n−1]`, per clip | `FIR` with `[1.0, -0.95]`, restarted for every window |
 | Mel spectrogram | `n_fft=1024`, `hop=172`, `n_mels=128`, 500–15000 Hz, magnitude, reflect padding | `generateMelSpectroGram(…, 1024, 128, 172)` |
 | dB | `amplitude_to_db(ref=max, amin=1e-5, top_db=80)` | `AudioFeatureExtraction.amplitudeToDb` |
 | Image | flip vertically, keep 128 × 256, min-max scale to 0–255 | `flip_vertically`, `reshape`, `normalize` |
 | Model | `128 × 256 × 1` float input, pixel values 0–255 | `assets/resnet_model.tflite`, top-3 labels shown |
 
 The app's features match the training pipeline to within ±1 grey level per pixel (verified against `librosa` on recordings from the training repo, see [`docs/plan/`](docs/plan/)).
+
+Windows are recognized on the recording thread, so audio that arrives while a window is being processed is skipped: consecutive windows are not back to back.
 
 ## Project structure
 
@@ -35,7 +37,7 @@ app/src/main/
 │   ├── JLibrosa/                     # Bundled JLibrosa, adjusted to match librosa
 │   └── Variable/GlobalVariable.java  # Application class
 ├── assets/
-│   ├── resnet_model.tflite           # 184-species ResNet
+│   ├── resnet_model.tflite           # 185-species ResNet
 │   └── resnet_labels.txt
 └── res/
 docs/plan/                            # Records of why the project was changed

@@ -29,16 +29,24 @@ mel 頻譜（power=1）和訊號刻度是線性關係，所以把 `amin` 設為 
 librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的最大值是負的（例如 -1.5 dB），app 卻用 0，整張圖偏暗。
 另外 app 用 `toInt()` 無條件捨去，訓練端 PNG 是四捨五入。
 
-### 4. UI 在背景執行緒更新
+### 4. pre-emphasis 係數順序相反（code review 時發現）
+`FIR` 把 `impulseResponse[0]` 乘在**目前**的樣本上，所以 `floatArrayOf(-0.95F, 1.0F)` 算的是 `y[n] = x[n−1] − 0.95·x[n]`，不是訓練時的 `x[n] − 0.95·x[n−1]`。
+另外 FIR 是 Activity 的成員，狀態會延續到下一個窗口和下一次錄音，訓練端則是每段 1 秒各自從 `y[0] = x[0]` 開始。
+→ 改成 `floatArrayOf(1.0F, -ALPHA)`，並且每個窗口建立新的 FIR。
+
+### 5. UI 在背景執行緒更新
 辨識結果在錄音的 `Thread` 裡直接 `setText`，Android 只允許在 UI 執行緒操作 View，可能閃退。
 
-### 5. 從來沒有請求麥克風權限
+### 6. 從來沒有請求麥克風權限
 `startRecord()` 只檢查權限，沒授權就直接 return，使用者按 Record 沒反應。
 
-### 6. 版控雜物
+### 7. 錄音執行緒的競態條件（code review 時發現，main 原本就有）
+按 stop（或 `onStop`）時 UI 執行緒把 `mAudioRecord` 設成 null，但錄音執行緒可能正要執行 `mAudioRecord!!.read()` → NullPointerException 閃退；`isRecording` 也不是 `@Volatile`。快速 stop → Record 時，舊執行緒會繼續讀新的 `AudioRecord`，兩個執行緒同時使用不支援多執行緒的 TFLite interpreter。`read()` 只檢查 `ERROR_INVALID_OPERATION`，其他錯誤碼或讀到較少樣本時仍當作完整資料。
+
+### 8. 版控雜物
 `.gradle/`（建置快取）、`.idea/`（109 個 library 設定檔等）、`local.properties`（含本機 SDK 路徑 `C:\Users\Bobo\...`）都被 commit。
 
-### 7. 範本殘留
+### 9. 範本殘留
 `res/navigation/nav_graph.xml` 指向不存在的 `FirstFragment` / `SecondFragment`；相機相關 drawable、十幾個字串沒有任何地方引用。
 
 ## 驗證結果（每格 0–255，平均絕對誤差）
@@ -51,26 +59,47 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 | Accipiter gentilis 第 3 秒 | 1.0 | 0.00 |
 | Abroscopus albogularis 第 0 / 1 / 4 秒 | — | 0.00 |
 
-修正後最大誤差 1（浮點誤差），相關係數 1.0000。
+修正後最大誤差 1（浮點誤差），相關係數 1.0000。harness 的 pre-emphasis 是 `FIR.kt` 的逐行移植；用 app 原本的係數 `[-0.95, 1.0]` 時，同樣的片段平均誤差 0.2～17.4。
 改過的 `normalize()` 另外抽出來用 kotlinc 2.0.21 編譯並測試：輸出範圍 0–255、全靜音時回傳 0 不會閃退（`roundToInt()` 遇到 NaN 會丟例外，所以加了 `maxMin > 0` 判斷）。
 
 > 備註：比對時發現研究 repo 改用新版 librosa 後，`pad_mode` 預設從 `reflect` 變成 `constant`，會和 2022 年的訓練資料不一致；JLibrosa 是 `reflect`。這個修正放在研究 repo 的 PR。
 
 ### 對已部署模型的影響
-`assets/resnet_model.tflite` 是用正確的（librosa）特徵訓練的，所以修正後 app 餵進模型的資料才和訓練時一樣，辨識結果應該會變好，但**沒有在實機上量過準確率**。
+對抗性驗證用 `resnet_model.tflite` 跑了研究 repo 9 個錄音的 251 段 1 秒音訊，比較「app 特徵」和「訓練端特徵」的 top-1 是否一致：原本 125/251，修正後 251/251。**沒有在實機上量過準確率。**
 
 ## 做了什麼
 - `JLibrosa/process/AudioFeatureExtraction.java`：修正 #1、#2。
-- `RealTime2/RealTimeRecognize3.kt`：修正 #3、#4、#5。
-- `.gitignore`；`.gradle/`、`.idea/`、`local.properties` 移出版控（本機檔案不受影響）。
-- 刪除 #7 的未使用資源。
+- `RealTime2/RealTimeRecognize3.kt`：修正 #3～#7。錄音迴圈改成：每個錄音執行緒持有自己的 `AudioRecord` 並在結束時釋放；只有 `@Volatile recordingThread` 指向自己時才繼續；依實際讀到的樣本數填窗口；讀取失敗就停止；推論以 `synchronized` 保護。拒絕權限時顯示 Toast。
+- `.gitignore`；`.gradle/`、`.idea/`（保留共用的 `codeStyles/`、`dictionaries/`）、`local.properties` 移出版控（本機檔案不受影響）。
+- 刪除 #9 的未使用資源。
+- `app/build.gradle` 只保留用得到的套件：core-ktx、appcompat、material、constraintlayout、tensorflow-lite(-gpu)，並直接宣告 JLibrosa 需要的 `commons-math3`（原本是透過 JTransforms 間接引入）。移除 navigation、exifinterface、play-services、ffmpeg-kit-full、guava、tensorflow-android 1.13、task-audio、JTransforms、`libs/TarsosDSP-nightly.jar`、重複宣告的 tflite；`junit` 改成 `testImplementation`；移除已停止服務的 `jcenter()`。
 - README 改寫成和實際行為一致（特徵擷取對照表、結構、建置方式）。
 
+### 編譯驗證
+不能跑 Gradle，但可以用 Maven Central 上的 Robolectric `android-all`（API 31 的完整 Android framework）、TFLite 2.9.0、commons-math3，加上 `AppCompatActivity` / `ActivityCompat` / `R` 的最小 stub，以 javac + kotlinc 2.0.21 編譯 `RealTime2/`、`JLibrosa/` 全部原始碼。修改後可以編譯；另外故意放一個錯誤確認確實會失敗。
+這也證明了程式碼只需要上面保留的那幾個套件（資源只用到 material / appcompat 的 theme 和 ConstraintLayout）。
+
 ## 刻意保留 / 這次沒做
-- **相依套件清理（等能編譯再做）**：`build.gradle` 裡有很多沒用到的套件，`ffmpeg-kit-full`（APK 會多幾十 MB）、`tensorflow-android:1.13.1`、`guava`、`tensorflow-lite-task-audio`、`play-services-*`、`navigation-*`、`exifinterface`、`libs/TarsosDSP-nightly.jar`，`tensorflow-lite` 也重複宣告兩次。
-  但 `org.apache.commons.math3`（JLibrosa 會用到）目前是透過 `JTransforms` 間接引入的，拿掉之前要先改成直接宣告。沒辦法編譯就改相依套件風險太高，所以留到可以 build 時處理。
-- AGP 7.2 / Kotlin 1.5 / `jcenter()` 升級：同上。
+- AGP 7.2 / Kotlin 1.5 升級：沒有 Android SDK 無法驗證。
+- 每個窗口都重新建立 JLibrosa（mel filterbank）、float↔double 陣列複製：原本就有的效能問題，和正確性無關。
+- 處理窗口時錄音執行緒沒在讀，所以窗口之間的音訊會被跳過（README 已註明）。改成生產者／消費者需要較大的重構。
 - 套件名稱（`RealTime2`、`Variable` 沒有放在 `com.*` 底下）、`applicationId com.example.mysoundtest`：改了會影響已安裝的 app 和整個專案的 import，效益不大。
+
+## Code review 與對抗性驗證
+
+| 來源 | 發現 | 處理 |
+|---|---|---|
+| review | pre-emphasis 係數順序相反、狀態延續 | 修正（#4） |
+| review | stop 時 NPE、stop/start 兩個執行緒、`read()` 錯誤碼 | 修正（#7） |
+| review | 權限被拒絕沒有提示、旋轉時重複請求 | Toast + `savedInstanceState == null` 才請求 |
+| review | README「每秒」不精確、pre-emphasis 列錯誤 | 修正 README |
+| review | dB 峰值第二次掃描多餘 | 簡化成固定 -80 dB 下限 |
+| review | `.idea/` 整個忽略會丟掉共用 code style | 保留 `codeStyles/`、`dictionaries/` |
+| review | NaN 時 `roundToInt()` 會丟例外 | 不修：輸入是 16-bit PCM，`amplitudeToDb` 輸出一定在 [-80, 0]（對抗性驗證也確認） |
+| review | 每個窗口重建 filterbank 等效能問題 | 不修（原本就有） |
+| 對抗 | 獨立 harness（264 段，含靜音、削波、正弦、脈衝等合成訊號）證實 FIR 問題；修正後 0/264 段誤差 > 1 | 已修 |
+| 對抗 | README「184 種」錯誤，實際 185 種（labels 檔最後沒有換行） | 修正 |
+| 對抗 | 若訓練端用 librosa ≥ 0.10 的 `pad_mode='constant'`，即使修正後最大誤差 187 | 研究 repo 改回 `reflect`（2022 年訓練時的預設） |
 
 ## 合併前請在 Android Studio 確認
 1. Build 成功。
