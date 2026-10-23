@@ -39,8 +39,6 @@ class RealTimeRecognize3 : AppCompatActivity() {
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT //格式
     private val MONO_RECORDING_LENGTH = (SAMPLE_RATE * SAMPLE_DURATION_MS / 1000)
 
-    var bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, audioFormat) //缓冲区大小
-
     private lateinit var mAcousticEventDetector: AcousticEventDetector
     private lateinit var resultView: TextView
 
@@ -93,7 +91,7 @@ class RealTimeRecognize3 : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         // An empty result means the request was cancelled, not denied
         if (requestCode == REQUEST_RECORD_AUDIO && grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "未取得麥克風權限，請到系統設定開啟", Toast.LENGTH_LONG).show()
+            showError(R.string.error_permission_denied)
         }
     }
 
@@ -102,35 +100,47 @@ class RealTimeRecognize3 : AppCompatActivity() {
         Log.v("start record", "start record")
 
         if (!hasMicrophonePermission()) {
-            Toast.makeText(this, "需要麥克風權限才能辨識", Toast.LENGTH_SHORT).show()
+            showError(R.string.error_permission_needed)
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
             return
         }
+        // Queried on every start: a transient ERROR (-1) must not stick for the activity's lifetime
+        val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, audioFormat) //缓冲区大小
+        if (bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            showError(R.string.error_format_unsupported)
+            return
+        }
         if (bufferSize <= 0) {
-            Toast.makeText(this, "這台裝置不支援 44.1 kHz 錄音", Toast.LENGTH_LONG).show()
+            showError(R.string.error_microphone_unavailable)
             return
         }
-        val recorder = AudioRecord(
-            laiyuan, SAMPLE_RATE,
-            CHANNEL, audioFormat, bufferSize
-        )
-        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            // e.g. the microphone is still held by the previous recording or another app
+        val recorder = try {
+            AudioRecord(laiyuan, SAMPLE_RATE, CHANNEL, audioFormat, bufferSize)
+        } catch (e: RuntimeException) {  // IllegalArgumentException, SecurityException
+            Log.e("record", "AudioRecord failed", e)
+            showError(R.string.error_microphone_unavailable)
+            return
+        }
+        if (recorder.state == AudioRecord.STATE_INITIALIZED) {
+            recorder.startRecording()
+        }
+        // startRecording() can fail silently, e.g. while another app holds the microphone on
+        // Android 9 and lower (Android 10+ starts anyway and records silence)
+        if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             recorder.release()
-            Toast.makeText(this, "麥克風無法使用，請稍後再試", Toast.LENGTH_SHORT).show()
+            showError(R.string.error_microphone_unavailable)
             return
         }
-        recorder.startRecording()
         mAudioRecord = recorder
 
-        val thread = Thread { recordLoop(recorder) }
+        val thread = Thread { recordLoop(recorder, bufferSize) }
         recordingThread = thread
         thread.start()
     }
 
     // Runs on the recording thread until stopRecord() clears recordingThread.
     // The thread owns its recorder, so a quick stop/start never shares one between two threads.
-    private fun recordLoop(recorder: AudioRecord) {
+    private fun recordLoop(recorder: AudioRecord, bufferSize: Int) {
         val self = Thread.currentThread()
         val audioBuffer = ShortArray(bufferSize)
         val window = ShortArray(MONO_RECORDING_LENGTH)
@@ -139,7 +149,7 @@ class RealTimeRecognize3 : AppCompatActivity() {
             while (recordingThread === self) {
                 val read = recorder.read(audioBuffer, 0, audioBuffer.size)
                 if (read < 0) {
-                    Log.e("record", "AudioRecord.read failed: $read")
+                    Log.w("record", "AudioRecord.read returned $read")
                     break
                 }
 
@@ -309,9 +319,19 @@ class RealTimeRecognize3 : AppCompatActivity() {
         return floatData
     }
 
+    private fun showError(message: Int) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
     private fun stopRecord() {
         Log.v("stop record", "stop record")
-        // The recording thread stops and releases its recorder on its next read
+        // Stop now so the microphone is free for the next start. Stop before clearing
+        // recordingThread: the thread only releases the recorder after it leaves the loop.
+        try {
+            mAudioRecord?.stop()
+        } catch (e: IllegalStateException) {
+            // already released by its thread after a read error
+        }
         recordingThread = null
         mAudioRecord = null
     }

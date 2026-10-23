@@ -41,7 +41,7 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 `startRecord()` 只檢查權限，沒授權就直接 return，使用者按 Record 沒反應。
 
 ### 7. 錄音執行緒的競態條件（code review 時發現，main 原本就有）
-按 stop（或 `onStop`）時 UI 執行緒把 `mAudioRecord` 設成 null，但錄音執行緒可能正要執行 `mAudioRecord!!.read()` → NullPointerException 閃退；`isRecording` 也不是 `@Volatile`。快速 stop → Record 時，舊執行緒會繼續讀新的 `AudioRecord`，兩個執行緒同時使用不支援多執行緒的 TFLite interpreter（修正後兩個執行緒不再共用 recorder；但舊 recorder 要等舊執行緒處理完當前窗口才會釋放，這段時間按 Record，新 recorder 可能初始化失敗，會顯示 Toast）。`read()` 只檢查 `ERROR_INVALID_OPERATION`，其他錯誤碼或讀到較少樣本時仍當作完整資料。
+按 stop（或 `onStop`）時 UI 執行緒把 `mAudioRecord` 設成 null，但錄音執行緒可能正要執行 `mAudioRecord!!.read()` → NullPointerException 閃退；`isRecording` 也不是 `@Volatile`。快速 stop → Record 時，舊執行緒會繼續讀新的 `AudioRecord`，兩個執行緒同時使用不支援多執行緒的 TFLite interpreter（修正後兩個執行緒不再共用 recorder，而且 stop 時立刻 `stop()` 舊的 recorder 釋放麥克風，舊執行緒處理完當前窗口後再 `release()`）。`read()` 只檢查 `ERROR_INVALID_OPERATION`，其他錯誤碼或讀到較少樣本時仍當作完整資料。
 
 ### 8. 版控雜物
 `.gradle/`（建置快取）、`.idea/`（109 個 library 設定檔等）、`local.properties`（含本機 SDK 路徑 `C:\Users\Bobo\...`）都被 commit。
@@ -107,6 +107,8 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 | 對抗（第二輪） | `AudioRecord` 初始化失敗（`getMinBufferSize` 錯誤、麥克風被占用）會在 UI 執行緒丟例外 | 檢查 `bufferSize` 和 `state`，失敗時顯示 Toast |
 | 對抗（第二輪） | TFLite interpreter 從未關閉（每次旋轉洩漏一個）；辨識中的例外會讓 app 閃退 | 不修：原本就有，關閉 interpreter 要和錄音執行緒同步，記在未來可做 |
 | 對抗（第二輪） | plan 的「原本」欄不是真正的原始 app | 用 main 原始碼重算並更正 |
+| review（第三輪） | `startRecording()` 可能靜默失敗；建構子可能丟例外；`bufferSize` 只在建立時算一次；stop 後舊 recorder 仍占著麥克風 | 檢查 `recordingState`、try/catch、每次開始時重算、stop 時立即 `stop()`；錯誤訊息移到 `strings.xml` |
+| review（第三輪） | 取消權限對話框時沒有任何提示 | 不修：再按 Record 會重新詢問 |
 
 ## 合併前請在 Android Studio 確認
 1. Build 成功。

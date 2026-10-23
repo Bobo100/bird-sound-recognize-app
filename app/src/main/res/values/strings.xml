@@ -3,4 +3,8 @@
     <string name="classify">辨識</string>
     <string name="record">Record</string>
     <string name="stop">stop</string>
+    <string name="error_permission_needed">需要麥克風權限才能辨識</string>
+    <string name="error_permission_denied">未取得麥克風權限，請到系統設定開啟</string>
+    <string name="error_format_unsupported">這台裝置不支援 44.1 kHz 單聲道錄音</string>
+    <string name="error_microphone_unavailable">麥克風無法使用，請稍後再試</string>
 </resources>
