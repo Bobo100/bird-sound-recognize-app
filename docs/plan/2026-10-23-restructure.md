@@ -105,7 +105,7 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 | 對抗（第二輪） | 新 HEAD：264 段全部誤差 ≤ 1、top-1 / top-3 251/251；`RealTime2/` 以真正的 TFLite 2.9.0 jar 加 `-Werror` 編譯通過；移除的套件沒有殘留引用 | 確認 |
 | 對抗（第二輪） | 取消權限對話框時 `grantResults` 是空的，會誤顯示「未取得權限」 | 修正 |
 | 對抗（第二輪） | `AudioRecord` 初始化失敗（`getMinBufferSize` 錯誤、麥克風被占用）會在 UI 執行緒丟例外 | 檢查 `bufferSize` 和 `state`，失敗時顯示 Toast |
-| 對抗（第二輪） | TFLite interpreter 從未關閉（每次旋轉洩漏一個）；辨識中的例外會讓 app 閃退 | 不修：原本就有，關閉 interpreter 要和錄音執行緒同步，記在未來可做 |
+| 對抗（第二輪） | TFLite interpreter 從未關閉（每次旋轉洩漏一個）；辨識中的例外會讓 app 閃退 | 不修：原本就有，關閉 interpreter 要和錄音執行緒同步，列在「狀態」的尚未完成 |
 | 對抗（第二輪） | plan 的「原本」欄不是真正的原始 app | 用 main 原始碼重算並更正 |
 | review（第三輪） | `startRecording()` 可能靜默失敗；建構子可能丟例外；`bufferSize` 只在建立時算一次；stop 後舊 recorder 仍占著麥克風 | 檢查 `recordingState`、try/catch、每次開始時重算、stop 時立即 `stop()`；錯誤訊息移到 `strings.xml` |
 | review（第三輪） | 取消權限對話框時沒有任何提示 | 不修：再按 Record 會重新詢問 |
@@ -124,3 +124,21 @@ librosa 的峰值常常落在被裁掉的第 257 個 frame，這時訓練端的�
 - 工作流程：分支（worktree）→ `docs/plan` → review 與對抗性驗證 → PR → **squash merge**。
 
 **不重寫 main 的舊歷史。** main 上的 commit 都已公開，改寫要 force-push，會讓所有 clone 對不上；而且舊訊息多半是「Update README.md」，重寫也補不回當時的原因。改用 squash merge，讓之後 main 上每個 PR 都是一個格式正確的 commit，分支上的中間 commit 不會留在 main。
+
+## 狀態
+
+**程式修改完成（2026-10-23）**，以 [PR #1](https://github.com/Bobo100/bird-sound-recognize-app/pull/1) squash merge 合併到 `main`。**Android Studio build 與實機測試尚未進行**（這個環境無法安裝 Android SDK），見下方第一項。
+
+已完成：
+- [x] 特徵擷取和訓練端一致（dB 截斷、`amin`、`normalize`、pre-emphasis）
+- [x] 錄音執行緒競態、啟動失敗處理、權限請求、UI 執行緒更新
+- [x] 相依套件精簡、移除 `jcenter()`、版控雜物移出
+- [x] README 改寫、`CONTRIBUTING.md`、PR 範本
+
+尚未完成（後續另開 PR）：
+- [ ] 在 Android Studio build 並實機測試（這個環境無法連到 `dl.google.com`）
+- [ ] TFLite interpreter 在 `onDestroy` 關閉（需和錄音執行緒同步）
+- [ ] 錄音與辨識分成兩個執行緒，讓窗口連續不漏音訊
+- [ ] AGP 7.2 / Kotlin 1.5 升級
+- [ ] 辨識過程中的例外（TFLite、JLibrosa）會讓 app 閃退：錄音執行緒沒有攔截例外
+- [ ] 效能：每個窗口都重新建立 JLibrosa 的 mel filterbank、float↔double 陣列複製
