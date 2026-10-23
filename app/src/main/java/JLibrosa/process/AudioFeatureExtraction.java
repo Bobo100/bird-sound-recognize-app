@@ -555,7 +555,6 @@ public class AudioFeatureExtraction {
         // This computes the scaling ``20 * log10(S / ref)`` in a numerically
         // stable way.
         double[][] log_spec = new double[melS.length][melS[0].length];
-        double maxValue = -100;
 
         double max = melS[0][0];
 
@@ -606,38 +605,20 @@ public class AudioFeatureExtraction {
 ////            }
 ////        }
 
-        //自己寫寫看
+        // Same as librosa.amplitude_to_db(S, ref=np.max, amin=1e-5, top_db=80) used in training.
+        // Training audio is float in [-1, 1]; melS must come from 16-bit PCM values (as the recording
+        // pages pass them, not JLibrosa's [-1, 1] file loaders), so amin is scaled by 32768.
+        final double amin = 1e-5 * 32768;
+        final double refDb = 20.0 * log10(Math.max(amin, max));
         for (int i = 0; i < melS.length; i++) {
             for (int j = 0; j < melS[0].length; j++) {
                 double magnitude = Math.abs(melS[i][j]);
-                if (magnitude > 1e-10) {
-                    log_spec[i][j] = 20.0 * log10(magnitude);
-                } else {
-                    log_spec[i][j] = 20.0 * log10(1e-10);
-                }
-                if (max > 1e-10) {
-                    log_spec[i][j] -= 20.0 * log10(max);
-                }else {
-                    log_spec[i][j] -= 20.0 * log10(1e-10);
-                }
-            }
-        }
-        max = log_spec[0][0];
-        for (int i = 0; i < melS.length; i++) {
-            for (int j = 0; j < melS[0].length; j++) {
-                if (log_spec[i][j] < max - 80) {
-                    log_spec[i][j] = max - 80;
-                }
+                log_spec[i][j] = 20.0 * log10(Math.max(amin, magnitude)) - refDb;
+                // top_db = 80: with ref = max the peak is exactly 0 dB, so the floor is -80 dB
+                log_spec[i][j] = Math.max(log_spec[i][j], -80.0);
             }
         }
 
-//        log_spec = 20.0 * np.log10(np.maximum(amin, magnitude))
-//        log_spec -= 20.0 * np.log10(np.maximum(amin, ref_value))
-//
-//        if top_db is not None:
-//        if top_db < 0:
-//        raise ParameterError("top_db must be non-negative")
-//        log_spec = np.maximum(log_spec, log_spec.max() - top_db)
 
 
         return log_spec;

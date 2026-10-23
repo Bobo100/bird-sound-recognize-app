@@ -1,31 +1,58 @@
-# BirdSoundRecognizeAPP
+# 🐦 BirdSoundRecognizeAPP
 
-I also researched it for a long time, because there is no material on the Internet that teaches how to convert the audio data into the same method as the input structure of the model, especially when the image is real-time.
+> Android app that recognizes bird species from the microphone in real time, fully offline, using the ResNet model trained in [BirdSoundRecognize](https://github.com/Bobo100/BirdSoundRecognize).
 
-On the Android Studio platform, Mel-Scaled Log-Magnitude Spectrograms can be quickly obtained through the Jlibrosa library. The relevant parameters are also the same as the feature extraction process in the training phase.
+<p align="center">
+  <img src="image/resnet-flow%20chart.png" alt="ResNet real-time flow chart" width="720">
+</p>
 
-I finally finished it and put it up for your reference.
+There is little material on how to turn live microphone audio into exactly the same input the model saw during training. This app does it on-device with [JLibrosa](https://github.com/Subtitle-Synchronizer/jlibrosa), reproducing the training-side `librosa` pipeline step by step. Because nothing is sent to a server, it saves at least 8 seconds per recognition compared with a server round trip.
 
-Please let me know if there is something wrong, thank you.
+## How it works
 
-Keyword: Bird Sound、Bird Sound Recognition、Application、Machine Leanring、Bird Identification
+The app records 44.1 kHz mono audio and cuts it into 1-second windows. Each window goes through the same steps as `utils/audio.melspec` in the training repo:
 
-# Introduce
+| Step | Training (Python, `librosa`) | App (`RealTimeRecognize3.kt`, JLibrosa) |
+|---|---|---|
+| Pre-emphasis | `y[n] = x[n] − 0.95·x[n−1]`, per clip | `FIR` with `[1.0, -0.95]`, restarted for every window |
+| Mel spectrogram | `n_fft=1024`, `hop=172`, `n_mels=128`, 500–15000 Hz, magnitude, reflect padding | `generateMelSpectroGram(…, 1024, 128, 172)` |
+| dB | `amplitude_to_db(ref=max, amin=1e-5, top_db=80)` | `AudioFeatureExtraction.amplitudeToDb` |
+| Image | flip vertically, keep 128 × 256, min-max scale to 0–255 | `flip_vertically`, `reshape`, `normalize` |
+| Model | `128 × 256 × 1` float input, pixel values 0–255 | `assets/resnet_model.tflite`, top-3 labels shown |
 
-Three CNN models for bird sound recognition are trained and tested with different configurations and hyperparameters. Models can be used offline. Unlike traditional methods, our method does not need to send data back to the server, thus saving at least 8 seconds for the overall computation time.
+The app's features match the training pipeline to within ±1 grey level per pixel (verified against `librosa` on recordings from the training repo, see [`docs/plan/`](docs/plan/)).
 
-The model trained in the previous step (machine learning ) will be deployed to the mobile phone for use.
+Windows are recognized on the recording thread, so audio that arrives while a window is being processed is skipped: consecutive windows are not back to back.
 
-The ResNet version is currently available.
-I have not uploaded the method for Efficientnet and YAMNet.
+## Project structure
 
-The flow chart of the ResNet model running on a smartphone in real time is as follows:
-![alt text](image/resnet-flow%20chart.png "resnet-flow chart")
+```
+app/src/main/
+├── java/
+│   ├── RealTime2/
+│   │   ├── RealTimeRecognize3.kt     # Launcher activity: recording loop + feature pipeline
+│   │   ├── AcousticEventDetector.kt  # Model / label file names
+│   │   ├── Classifier.java           # TFLite interpreter wrapper, top-3 results
+│   │   └── aed_method_DSP/FIR.kt     # Pre-emphasis filter
+│   ├── JLibrosa/                     # Bundled JLibrosa, adjusted to match librosa
+│   └── Variable/GlobalVariable.java  # Application class
+├── assets/
+│   ├── resnet_model.tflite           # 185-species ResNet
+│   └── resnet_labels.txt
+└── res/
+docs/plan/                            # Records of why the project was changed
+```
 
-After recording, one second of audio is processed and then identified.
+## Build
 
-# Future Features
+Open the project in Android Studio and run the `app` configuration on a device (minSdk 25). The app asks for microphone permission on first launch; press **Record** to start recognizing and **stop** to end.
 
-I will provide a more complete interface, and will add a "statistical results within 10 seconds" function
+To use your own model, replace `assets/resnet_model.tflite` and `assets/resnet_labels.txt` with the files `train.py` exports in the training repo.
 
-Or you can change the number of seconds, not limited to 1 second, but I haven't written it yet
+## Status
+
+Research code from a 2022 master's thesis, not actively maintained. The EfficientNet and YAMNet versions mentioned in the thesis are not included.
+
+Planned when it was written: a fuller interface, a "results over the last 10 seconds" summary, and configurable window length instead of a fixed 1 second.
+
+**Keywords:** Bird Sound, Bird Sound Recognition, Application, Machine Learning, Bird Identification

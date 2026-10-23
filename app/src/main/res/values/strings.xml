@@ -1,28 +1,10 @@
 <resources>
     <string name="app_name">MySoundTest</string>
-    <string name="action_settings">Settings</string>
-    <!-- Strings used for fragments for navigation -->
-    <string name="first_fragment_label">First Fragment</string>
-    <string name="second_fragment_label">Second Fragment</string>
-    <string name="及時辨識鳥聲頁面">及時辨識鳥聲頁面</string>
-    <string name="previous">Previous</string>
     <string name="classify">辨識</string>
-    <string name="results">results</string>
-
-    <string name="hello_first_fragment">請選擇檔案來辨識</string>
-    <string name="hello_second_fragment">Hello second fragment. Arg: %1$s</string>
-    <string name="dynamic_illustration_of_direction_of_sound_source">Dynamic illustration of direction of sound source.</string>
-    <string name="start">start</string>
-    <string name="test">測試文字</string>
-    <string name="stop">stop</string>
-
-    <string name="ready_msg">Recognition started!</string>
     <string name="record">Record</string>
-    <string name="Direction">Direction</string>
-    <string name="辨識鳥聲檔案頁面">辨識鳥聲檔案頁面</string>
-    <string name="Camera">Camera</string>
-    <string name="GPS">GPS</string>
-    <string name="latitude">latitude</string>
-    <string name="longitude">longitude</string>
-
+    <string name="stop">stop</string>
+    <string name="error_permission_needed">需要麥克風權限才能辨識</string>
+    <string name="error_permission_denied">未取得麥克風權限，請到系統設定開啟</string>
+    <string name="error_format_unsupported">這台裝置不支援 44.1 kHz 單聲道錄音</string>
+    <string name="error_microphone_unavailable">麥克風無法使用，請稍後再試</string>
 </resources>

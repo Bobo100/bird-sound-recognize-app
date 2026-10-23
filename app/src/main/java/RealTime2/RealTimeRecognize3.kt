@@ -13,15 +13,24 @@ import android.os.Bundle
 import android.util.Log
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.example.mysoundtest.R
+import kotlin.math.roundToInt
 
 
 @Suppress("DEPRECATION")
 class RealTimeRecognize3 : AppCompatActivity() {
+    companion object {
+        private const val REQUEST_RECORD_AUDIO = 1
+    }
+
     private var mAudioRecord: AudioRecord? = null
-    private var isRecording = false
+
+    // The thread allowed to keep recording; null when stopped
+    @Volatile
+    private var recordingThread: Thread? = null
 
     private var laiyuan = MediaRecorder.AudioSource.VOICE_RECOGNITION //来源
     private val SAMPLE_RATE = 44100 //采样频率
@@ -30,14 +39,14 @@ class RealTimeRecognize3 : AppCompatActivity() {
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT //格式
     private val MONO_RECORDING_LENGTH = (SAMPLE_RATE * SAMPLE_DURATION_MS / 1000)
 
-    var bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, audioFormat) //缓冲区大小
-
     private lateinit var mAcousticEventDetector: AcousticEventDetector
+    private lateinit var resultView: TextView
 
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_real_time_recognize3)
+        resultView = findViewById(R.id.recognize_result)
 
         //開始錄音 與 辨識
         val start_record = findViewById<Button>(R.id.btn_recognize_start)
@@ -55,6 +64,11 @@ class RealTimeRecognize3 : AppCompatActivity() {
             }
         }
 
+        // Ask for the microphone up front (not again after a rotation)
+        if (savedInstanceState == null && !hasMicrophonePermission()) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
+        }
+
         // TensorFlow Lite
         mAcousticEventDetector = AcousticEventDetector(
             this,
@@ -70,105 +84,130 @@ class RealTimeRecognize3 : AppCompatActivity() {
         stopRecord()
     }
 
+    private fun hasMicrophonePermission() =
+        ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // An empty result means the request was cancelled, not denied
+        if (requestCode == REQUEST_RECORD_AUDIO && grantResults.isNotEmpty() && grantResults[0] != PackageManager.PERMISSION_GRANTED) {
+            showError(R.string.error_permission_denied)
+        }
+    }
+
+    @SuppressLint("MissingPermission") // checked by hasMicrophonePermission()
     private fun startRecord() {
         Log.v("start record", "start record")
 
-        val audioBuffer = ShortArray(bufferSize)
-        if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
+        if (!hasMicrophonePermission()) {
+            showError(R.string.error_permission_needed)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_RECORD_AUDIO)
             return
         }
-        mAudioRecord = AudioRecord(
-            laiyuan, SAMPLE_RATE,
-            CHANNEL, audioFormat, bufferSize
-        )
-        mAudioRecord!!.startRecording()
-        isRecording = true
-        val shortInputBuffertemp = ShortArray(MONO_RECORDING_LENGTH)
+        // Queried on every start: a transient ERROR (-1) must not stick for the activity's lifetime
+        val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, audioFormat) //缓冲区大小
+        if (bufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            showError(R.string.error_format_unsupported)
+            return
+        }
+        if (bufferSize <= 0) {
+            showError(R.string.error_microphone_unavailable)
+            return
+        }
+        val recorder = try {
+            AudioRecord(laiyuan, SAMPLE_RATE, CHANNEL, audioFormat, bufferSize)
+        } catch (e: RuntimeException) {  // IllegalArgumentException, SecurityException
+            Log.e("record", "AudioRecord failed", e)
+            showError(R.string.error_microphone_unavailable)
+            return
+        }
+        if (recorder.state == AudioRecord.STATE_INITIALIZED) {
+            recorder.startRecording()
+        }
+        // startRecording() can fail silently, e.g. while another app holds the microphone on
+        // Android 9 and lower (Android 10+ starts anyway and records silence)
+        if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            recorder.release()
+            showError(R.string.error_microphone_unavailable)
+            return
+        }
+        mAudioRecord = recorder
 
-        Thread {
-            var loop_check = false
+        val thread = Thread { recordLoop(recorder, bufferSize) }
+        recordingThread = thread
+        thread.start()
+    }
 
-            var count = 0
-            while (isRecording) {
-                val read = mAudioRecord!!.read(audioBuffer, 0, audioBuffer.size) //3528
-                //有沒有正確讀取
-                if (AudioRecord.ERROR_INVALID_OPERATION != read) {
-                    // Ring buffer
-                    //代表是最後一次
-                    if (shortInputBuffertemp.size / audioBuffer.size == count) {
-                        loop_check = true
+    // Runs on the recording thread until stopRecord() clears recordingThread.
+    // The thread owns its recorder, so a quick stop/start never shares one between two threads.
+    private fun recordLoop(recorder: AudioRecord, bufferSize: Int) {
+        val self = Thread.currentThread()
+        val audioBuffer = ShortArray(bufferSize)
+        val window = ShortArray(MONO_RECORDING_LENGTH)
+        var filled = 0
+        try {
+            while (recordingThread === self) {
+                val read = recorder.read(audioBuffer, 0, audioBuffer.size)
+                if (read < 0) {
+                    Log.w("record", "AudioRecord.read returned $read")
+                    break
+                }
 
-                        System.arraycopy(
-                            audioBuffer,
-                            0,
-                            shortInputBuffertemp,
-                            count * audioBuffer.size,
-                            shortInputBuffertemp.size - (count * audioBuffer.size)
-                        )
-                    } else {
-                        System.arraycopy(
-                            audioBuffer,
-                            0,
-                            shortInputBuffertemp,
-                            count * audioBuffer.size,
-                            audioBuffer.size
-                        )
+                // Fill the 1 s window; samples past its end are dropped
+                val n = minOf(read, window.size - filled)
+                System.arraycopy(audioBuffer, 0, window, filled, n)
+                filled += n
+
+                if (filled == window.size) {
+                    val results = recognize(window)
+                    Log.v("results", results.toString())
+                    runOnUiThread {
+                        // Ignore a window that finished after stop was pressed
+                        if (recordingThread === self) resultView.text = "$results"
                     }
-
-                    ++count
-
-                    if (loop_check) {
-                        val temp = convertFromShortArrayToFloatArray(shortInputBuffertemp)
-                        applyPreEmphasis(temp)
-
-                        ////////////////////////////////////////////////////////////////////////////////////////// JLibrosa引用
-
-                        val jLibrosa = JLibrosa()
-
-                        /////////////////////////////////////////////////////////////////////////////////////////// MelSpectroGram
-                        val melSVal =
-                            jLibrosa.generateMelSpectroGram(temp, SAMPLE_RATE, 1024, 128, 172)
-                        /////////////////////////////////////////////////////////////////////////////////////////// amplitudeToDb
-                        val AudioFeatureExtraction = AudioFeatureExtraction()
-                        val log_spec = AudioFeatureExtraction.amplitudeToDb(
-                            convertFrom2DFloatArrayTo2DDoubleArray(melSVal))
-                        /////////////////////////////////////////////////////////////////////////////////////////// flip_vertically and reshape
-                        val convertvalue = convertFrom2DDoubleArrayTo2DFloatArray(log_spec)
-                        val reshape2 = reshape(flip_vertically(convertvalue))
-                        /////////////////////////////////////////////////////////////////////////////////////////// normalize
-                        val finalmfccValues = normalize(reshape2)
-                        /////////////////////////////////////////////////////////////////////////////////////////// 2d to 1d array
-                        val oneDArray = mode(finalmfccValues)
-
-                        /////////////////////////////////////////////////////////////////////////////////////////// predict
-                        val results = mAcousticEventDetector.recognize(oneDArray)
-                        val recognize_result = findViewById<TextView>(R.id.recognize_result)
-                        recognize_result.text = "$results"
-                        Log.v("results", results.toString())
-                        ///////////////////////////////////////////////////////////////////////////////////////////
-
-                        loop_check = false
-                        count = 0
-                    }
+                    filled = 0
                 }
             }
-        }.start()
+        } finally {
+            recorder.stop()
+            recorder.release()
+            runOnUiThread { if (mAudioRecord === recorder) mAudioRecord = null }
+        }
+    }
+
+    // Same feature extraction as utils/audio.melspec in the training repo
+    private fun recognize(window: ShortArray): List<Classifier.Recognition> {
+        val temp = convertFromShortArrayToFloatArray(window)
+        applyPreEmphasis(temp)
+
+        ////////////////////////////////////////////////////////////////////////////////////////// JLibrosa引用
+
+        val jLibrosa = JLibrosa()
+
+        /////////////////////////////////////////////////////////////////////////////////////////// MelSpectroGram
+        val melSVal =
+            jLibrosa.generateMelSpectroGram(temp, SAMPLE_RATE, 1024, 128, 172)
+        /////////////////////////////////////////////////////////////////////////////////////////// amplitudeToDb
+        val AudioFeatureExtraction = AudioFeatureExtraction()
+        val log_spec = AudioFeatureExtraction.amplitudeToDb(
+            convertFrom2DFloatArrayTo2DDoubleArray(melSVal))
+        /////////////////////////////////////////////////////////////////////////////////////////// flip_vertically and reshape
+        val convertvalue = convertFrom2DDoubleArrayTo2DFloatArray(log_spec)
+        val reshape2 = reshape(flip_vertically(convertvalue))
+        /////////////////////////////////////////////////////////////////////////////////////////// normalize
+        val finalmfccValues = normalize(reshape2)
+        /////////////////////////////////////////////////////////////////////////////////////////// 2d to 1d array
+        val oneDArray = mode(finalmfccValues)
+
+        /////////////////////////////////////////////////////////////////////////////////////////// predict
+        // The interpreter and its input buffer are not thread-safe
+        return synchronized(mAcousticEventDetector) { mAcousticEventDetector.recognize(oneDArray) }
     }
 
     private fun normalize(mfccValues: Array<FloatArray>): Array<IntArray> {
-        var max_float = 0F
-        var min_float = 255F
+        // Start from a real value: dB values are <= 0, so 0F / 255F never get replaced
+        var max_float = mfccValues[0][0]
+        var min_float = mfccValues[0][0]
         for (i in mfccValues.indices) {
             for (j in 0 until mfccValues[0].size) {
                 if (mfccValues[i][j] > max_float) max_float = mfccValues[i][j]
@@ -183,7 +222,7 @@ class RealTimeRecognize3 : AppCompatActivity() {
 
         for (i in mfccValues.indices) {
             for (j in 0 until mfccValues[0].size) {
-                intArray[i][j] = ((mfccValues[i][j] - min_float) * 255F / maxMin).toInt()
+                intArray[i][j] = if (maxMin > 0F) ((mfccValues[i][j] - min_float) * 255F / maxMin).roundToInt() else 0
             }
         }
         return intArray
@@ -234,12 +273,12 @@ class RealTimeRecognize3 : AppCompatActivity() {
     // FIR (Finite Impulse Response)
 
     private val ALPHA = 0.95F  // 0.95 ~ 0.97
-    private val PRE_EMPHASIS_MPULSE_RESPONSE = floatArrayOf(-ALPHA, 1.0F)
+    // FIR applies impulseResponse[i] to x[n - i], so this is y[n] = x[n] - 0.95 x[n-1] as in training
+    private val PRE_EMPHASIS_IMPULSE_RESPONSE = floatArrayOf(1.0F, -ALPHA)
 
-    private var mPreEmphasisFir = FIR(PRE_EMPHASIS_MPULSE_RESPONSE) //0.95
-
+    // A fresh filter per window: training applies pre-emphasis to each 1 s clip on its own
     fun applyPreEmphasis(buf: FloatArray) {
-        mPreEmphasisFir.transform(buf)
+        FIR(PRE_EMPHASIS_IMPULSE_RESPONSE).transform(buf)
     }
 
     private fun convertFromShortArrayToFloatArray(shortData: ShortArray): FloatArray {
@@ -280,13 +319,20 @@ class RealTimeRecognize3 : AppCompatActivity() {
         return floatData
     }
 
+    private fun showError(message: Int) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
     private fun stopRecord() {
         Log.v("stop record", "stop record")
-        isRecording = false
-        if (mAudioRecord != null) {
-            mAudioRecord!!.stop()
-            mAudioRecord!!.release()
-            mAudioRecord = null
+        // Stop now so the microphone is free for the next start. Stop before clearing
+        // recordingThread: the thread only releases the recorder after it leaves the loop.
+        try {
+            mAudioRecord?.stop()
+        } catch (e: IllegalStateException) {
+            // already released by its thread after a read error
         }
+        recordingThread = null
+        mAudioRecord = null
     }
 }
